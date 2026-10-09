@@ -28,8 +28,10 @@ function App() {
       const data = await response.json();
       setDashboard(data);
       setError("");
-    } catch {
-      setError("Cannot connect to backend. Make sure FastAPI is running.");
+    } catch (err) {
+      setError(
+        "Cannot connect to backend. Please check the live API connection."
+      );
     }
   }
 
@@ -78,10 +80,8 @@ function App() {
           ))}
         </section>
 
-        {/* Login Simulation */}
         <LoginSimulation onAttemptRecorded={loadDashboard} />
 
-        {/* Event Summary Chart */}
         <section className="panel">
           <h2>Event Summary</h2>
 
@@ -112,17 +112,17 @@ function App() {
               </ResponsiveContainer>
             </div>
           ) : (
-            <p>Loading chart...</p>
+            <p>{error ? "Chart unavailable." : "Loading chart..."}</p>
           )}
         </section>
 
-        {/* Recent Security Events */}
         <section className="panel">
           <h2>Recent Security Events</h2>
 
           {!dashboard ? (
-            <p>Loading events...</p>
-          ) : dashboard.recent_events.length === 0 ? (
+            <p>{error ? "Events unavailable." : "Loading events..."}</p>
+          ) : !dashboard.recent_events ||
+            dashboard.recent_events.length === 0 ? (
             <p>No security events recorded yet.</p>
           ) : (
             <div className="table-wrap">

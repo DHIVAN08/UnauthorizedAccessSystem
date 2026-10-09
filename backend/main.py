@@ -1,4 +1,5 @@
 
+import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -15,17 +16,26 @@ from models import LoginEvent
 
 app = FastAPI(
     title="Unauthorized Access Detection and Prevention System",
-    description="Detects repeated failed access attempts and records security events.",
-    version="1.2.0",
+    description=(
+        "Detects repeated failed access attempts, "
+        "temporarily blocks repeated failures, and records security events."
+    ),
+    version="1.3.0",
 )
 
-# Allow the React frontend to communicate with the FastAPI backend.
+# Add your deployed frontend origin to FRONTEND_ORIGIN in Render.
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+frontend_origin = os.getenv("FRONTEND_ORIGIN")
+if frontend_origin:
+    allowed_origins.append(frontend_origin.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,6 +45,8 @@ MAX_FAILURES = 5
 WINDOW_MINUTES = 10
 BLOCK_MINUTES = 5
 
+# In-memory state: resets on application restart and is not shared
+# between multiple worker processes.
 attempts = defaultdict(deque)
 blocked_until = {}
 lock = Lock()
@@ -50,11 +62,25 @@ def get_current_time():
     return datetime.now(timezone.utc)
 
 
+def get_client_ip(request: Request) -> str:
+    """
+    Use the direct peer address by default.
+
+    Only enable forwarded-IP handling if you control and have verified
+    the trusted proxy configuration. Never trust arbitrary X-Forwarded-For
+    headers from the public internet.
+    """
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
 @app.get("/")
 def home():
     return {
         "message": "Unauthorized Access Detection API is running",
         "docs": "/docs",
+        "version": app.version,
     }
 
 
@@ -69,7 +95,7 @@ def record_attempt(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    ip_address = request.client.host if request.client else "unknown"
+    ip_address = get_client_ip(request)
     key = (ip_address, data.username)
     current_time = get_current_time()
 
@@ -91,6 +117,7 @@ def record_attempt(
         else:
             if expiry is not None:
                 blocked_until.pop(key, None)
+                attempts[key].clear()
 
             cutoff = current_time - timedelta(minutes=WINDOW_MINUTES)
 
@@ -127,7 +154,10 @@ def record_attempt(
         db.rollback()
         raise HTTPException(
             status_code=500,
-            detail="Could not save access event. Check the database connection and table structure.",
+            detail=(
+                "Could not save access event. "
+                "Check the database connection and table structure."
+            ),
         )
 
     if retry_after > 0:
@@ -197,10 +227,9 @@ def dashboard(db: Session = Depends(get_db)):
     ]
 
     with lock:
+        now = get_current_time()
         active_blocks = sum(
-            1
-            for expiry in blocked_until.values()
-            if expiry > get_current_time()
+            1 for expiry in blocked_until.values() if expiry > now
         )
 
     return {
